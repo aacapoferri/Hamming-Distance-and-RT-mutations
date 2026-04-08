@@ -5,7 +5,7 @@
 #          Contact: adam.capoferri@nih.gov            #
 #######################################################
 
-# This is a Poisson hit hypothesis test to determine if the change in mutation frequency between TWO timepoints is significant and what the rate of change is. A relying assumption is that every position (genome length x number of sequences; or separately the sum of all A, C, T, and G) are available to undergo mutation. You cannot extract a biological reason for these changes under this test. It simply will answer whether or not the mutation change was significant. 
+# This is a Poisson hit hypothesis test (or Poisson rate-ratio test) to determine if the change in mutation frequency between TWO timepoints is significant and what the rate of change is. A relying assumption is that every position (genome length x number of sequences; or separately the sum of all A, C, T, and G) are available to undergo mutation. You cannot extract a biological reason for these changes under this test. It simply will answer whether or not the mutation change was significant. 
 
 # Optional: If you are interested in examining other mutations, such as GR>AR, you can amend the dataframe to include the additional changes.
 
