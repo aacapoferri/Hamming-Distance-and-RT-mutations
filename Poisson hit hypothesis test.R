@@ -1,0 +1,74 @@
+
+#######################################################
+#   Poisson hit hypothesis test for mutation changes  #
+#                    Version 1.0                      #
+#          Author: Adam A. Capoferri, PhD             #
+#          Contact: adam.capoferri@nih.gov            #
+#######################################################
+
+# This is a Poisson hit hypothesis test (or Poisson rate-ratio test) to determine if the change in mutation frequency between TWO timepoints is significant and what the rate of change is. A relying assumption is that every position (genome length x number of sequences; or separately the sum of all A, C, T, and G) are available to undergo mutation. You cannot extract a biological reason for these changes under this test. It simply will answer whether or not the mutation change was significant. 
+
+# Optional: If you are interested in examining other mutations, such as GR>AR, you can amend the dataframe to include the additional changes.
+
+#load library
+library(dplyr)
+
+# generate dataframe
+# Uploading a file might be easier but in this version you use each number of mutations for a given mononucleotide change
+df <- data.frame(
+  mutation = c("A>G","G>A","C>T","T>C","A>C","C>A",
+               "A>T","T>A","C>G","G>C","G>T","T>G"),
+  pre  = c(1, 8, 2, 28, 1, 12, 0, 0, 1, 1, 8, 1),
+  post = c(2, 0, 8, 50, 2, 2, 1, 2, 4, 0, 3, 5)
+)
+
+# calculate per mutation frequency
+per_mutation <- df %>%
+  rowwise() %>%
+  mutate(
+    test = list(
+      poisson.test(
+        x = c(pre, post),
+        T = c(273752, 233624) # the numbers here are indicating the total number of bases (available)
+      )
+    ),
+    estimate = test$estimate,          # rate ratio (pre / post)
+    conf.low = test$conf.int[1],
+    conf.high = test$conf.int[2],
+    p.value = test$p.value
+  ) %>%
+  ungroup()
+
+# Multiple testing correction
+per_mutation$p.adj <- p.adjust(per_mutation$p.value, method = "BH")
+
+# Preparing results
+results_csv <- per_mutation %>%
+  mutate(
+    rate_pre  = pre  / 273752, #adjust based on above
+    rate_post = post / 233624 #adjust based on above
+  ) %>%
+  select(
+    mutation,
+    pre,
+    post,
+    estimate,
+    conf.low,
+    conf.high,
+    p.value,
+    p.adj
+  )
+
+# write csv file, change name as necessary
+write.csv(
+  results_csv,
+  "filename_Poisson_rate_tests.csv",
+  row.names = FALSE
+)
+
+#### END ###
+
+# Additional notes:
+  # Mutation‑specific rate changes between pre‑ and post‑timepoints were assessed using exact Poisson rate tests, accounting for differing sequencing depths. Rate ratios (pre/post) with 95% confidence intervals were estimated for each mutation type, and p‑values were adjusted for multiple testing using the Benjamini–Hochberg procedure.
+  # Forest plot showing mutation‑specific rate ratios (pre/post) with exact 95% confidence intervals. Confidence intervals extending beyond plotting limits are indicated by arrows. Dashed vertical line indicates no change (rate ratio = 1).
+  # Infinite confidence bounds arise naturally from exact Poisson inference when no events are observed in one group; these were displayed using truncated confidence intervals with arrows, following standard practice for rare‑event analyses. I personally set 0 as 0.0001 and Inf. as 1000
