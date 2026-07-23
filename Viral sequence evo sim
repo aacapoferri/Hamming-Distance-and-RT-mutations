@@ -1,0 +1,302 @@
+###################################################
+#        Viral sequence evolution simulation      #
+#             Version 1.0 (July 2026)             #
+#         Written by Adam A. Capoferri, PhD       #
+###################################################
+
+# We simulated early HIV diversification from a single TF sequence using a discrete-time sequence-evolution model. Please see Capoferri and Boltz et al. (manuscript in prep) for full details.
+
+library(Biostrings)
+library(stringdist)
+library(dplyr)
+library(ggplot2)
+
+
+### User-defined area
+
+
+initial_sequence <- "NNNNN" # paste in the initial sequence/transmitted founder
+
+input_sequence <- initial_sequence
+
+substitution_rates <- list(
+  "A" = c("C" = 0.0234, "G" = 0.0680, "T" = 0.0193),
+  "C" = c("A" = 0.0173, "G" = 0.0010, "T" = 0.1706),
+  "G" = c("A" = 0.5584, "C" = 0.0173, "T" = 0.0010),
+  "T" = c("A" = 0.0203, "C" = 0.0660, "G" = 0.0376)
+)
+
+transition_bias <- 6.3
+
+# Put your two error rates here
+error_rate_values <- c(1.4e-5, 1.35e-5, 3.0e-5)
+
+# Put your three cycles/day values here
+replication_cycles_per_day_values <- c(0.5, 1)
+
+# Use all three day values
+n_day_values <- 22:24
+
+n_sequences <- 13855
+n_iterations <- 3   # increase later if needed
+
+set.seed(123456)
+
+
+### Model functions
+substitute_base_full <- function(base, substitution_rates, transition_bias) {
+  probabilities <- substitution_rates[[base]]
+  
+  if (is.null(probabilities)) {
+    stop(paste("Base not found in substitution_rates:", base))
+  }
+  
+  if (base %in% c("A", "G")) {
+    probabilities["C"] <- probabilities["C"] / transition_bias
+    probabilities["T"] <- probabilities["T"] / transition_bias
+  } else if (base %in% c("C", "T")) {
+    probabilities["A"] <- probabilities["A"] / transition_bias
+    probabilities["G"] <- probabilities["G"] / transition_bias
+  }
+  
+  sample(names(probabilities), size = 1, prob = probabilities)
+}
+
+substitute_base_hivrt <- function(base, substitution_rates) {
+  probabilities <- substitution_rates[[base]]
+  
+  if (is.null(probabilities)) {
+    stop(paste("Base not found in substitution_rates:", base))
+  }
+  
+  sample(names(probabilities), size = 1, prob = probabilities)
+}
+
+
+
+### Helper for unstable cycles
+draw_n_cycles <- function(n_days, replication_cycles_per_day) {
+  raw_cycles <- n_days * replication_cycles_per_day
+  base_cycles <- floor(raw_cycles)
+  fractional_part <- raw_cycles - base_cycles
+  
+  base_cycles + rbinom(1, size = 1, prob = fractional_part)
+}
+
+
+# Simulation
+simulate_evolution_collapse_unique <- function(initial_sequence,
+                                               n,
+                                               n_cycles,
+                                               error_rate_per_cycle,
+                                               substitution_rates,
+                                               model = c("full_model", "hiv_rt_only"),
+                                               transition_bias = NULL) {
+  model <- match.arg(model)
+  collapsed_counts <- integer(0)
+  
+  for (i in seq_len(n)) {
+    sequence <- strsplit(initial_sequence, "", fixed = TRUE)[[1]]
+    
+    for (cycle in seq_len(n_cycles)) {
+      mutate_sites <- runif(length(sequence)) < error_rate_per_cycle
+      
+      if (any(mutate_sites)) {
+        for (j in which(mutate_sites)) {
+          if (model == "full_model") {
+            sequence[j] <- substitute_base_full(sequence[j], substitution_rates, transition_bias)
+          } else {
+            sequence[j] <- substitute_base_hivrt(sequence[j], substitution_rates)
+          }
+        }
+      }
+    }
+    
+    sequence_str <- paste(sequence, collapse = "")
+    
+    if (sequence_str %in% names(collapsed_counts)) {
+      collapsed_counts[sequence_str] <- collapsed_counts[sequence_str] + 1L
+    } else {
+      collapsed_counts[sequence_str] <- 1L
+    }
+  }
+  
+  collapsed_counts
+}
+
+
+# Hamming distance summary table 
+calculate_hamming_distance_summary_from_counts <- function(input_sequence,
+                                                           collapsed_counts,
+                                                           model_name,
+                                                           replicate_id,
+                                                           error_rate_per_cycle,
+                                                           replication_cycles_per_day,
+                                                           n_days,
+                                                           n_cycles) {
+  sequences <- names(collapsed_counts)
+  counts <- as.integer(collapsed_counts)
+  
+  if (length(sequences) == 0) {
+    stop("No simulated sequences found.")
+  }
+  
+  hamming_distances <- stringdist(sequences, input_sequence, method = "hamming")
+  
+  data.frame(
+    Hamming_Distance = hamming_distances,
+    Count = counts,
+    stringsAsFactors = FALSE
+  ) %>%
+    group_by(Hamming_Distance) %>%
+    summarise(Count = sum(Count), .groups = "drop") %>%
+    mutate(
+      Model = model_name,
+      Replicate = replicate_id,
+      Error_Rate = error_rate_per_cycle,
+      Cycles_Per_Day = replication_cycles_per_day,
+      n_days = n_days,
+      n_cycles = n_cycles
+    ) %>%
+    select(Model, Replicate, Error_Rate, Cycles_Per_Day, n_days, n_cycles,
+           Hamming_Distance, Count)
+}
+
+
+# Run parameter sweep
+results_list <- list()
+result_index <- 1
+
+for (iter in seq_len(n_iterations)) {
+  message("Running replicate ", iter, " of ", n_iterations)
+  
+  for (err in error_rate_values) {
+    for (cpd in replication_cycles_per_day_values) {
+      for (days in n_day_values) {
+        
+        n_cycles <- draw_n_cycles(days, cpd)
+        
+        message("  Error rate = ", err,
+                ", cycles/day = ", cpd,
+                ", n_days = ", days,
+                ", sampled n_cycles = ", n_cycles)
+        
+        #### Full model ####
+        full_counts <- simulate_evolution_collapse_unique(
+          initial_sequence = initial_sequence,
+          n = n_sequences,
+          n_cycles = n_cycles,
+          error_rate_per_cycle = err,
+          substitution_rates = substitution_rates,
+          model = "full_model",
+          transition_bias = transition_bias
+        )
+        
+        results_list[[result_index]] <- calculate_hamming_distance_summary_from_counts(
+          input_sequence = input_sequence,
+          collapsed_counts = full_counts,
+          model_name = "full_model",
+          replicate_id = iter,
+          error_rate_per_cycle = err,
+          replication_cycles_per_day = cpd,
+          n_days = days,
+          n_cycles = n_cycles
+        )
+        result_index <- result_index + 1
+        
+        #### HIV RT only ####
+        hiv_counts <- simulate_evolution_collapse_unique(
+          initial_sequence = initial_sequence,
+          n = n_sequences,
+          n_cycles = n_cycles,
+          error_rate_per_cycle = err,
+          substitution_rates = substitution_rates,
+          model = "hiv_rt_only"
+        )
+        
+        results_list[[result_index]] <- calculate_hamming_distance_summary_from_counts(
+          input_sequence = input_sequence,
+          collapsed_counts = hiv_counts,
+          model_name = "hiv_rt_only",
+          replicate_id = iter,
+          error_rate_per_cycle = err,
+          replication_cycles_per_day = cpd,
+          n_days = days,
+          n_cycles = n_cycles
+        )
+        result_index <- result_index + 1
+      }
+    }
+  }
+}
+
+all_results <- bind_rows(results_list) %>%
+  arrange(Model, Error_Rate, Cycles_Per_Day, n_days, Replicate, Hamming_Distance)
+
+write.csv(
+  all_results,
+  file = "name.csv", # name as appropriate
+  row.names = FALSE
+)
+
+# Graph 1: Hamming distance distribution
+plot_data <- all_results %>%
+  group_by(Model, Error_Rate, Cycles_Per_Day, n_days, Hamming_Distance) %>%
+  summarise(Mean_Count = mean(Count), .groups = "drop") %>%
+  mutate(
+    Cycles_Per_Day = factor(Cycles_Per_Day),
+    n_days = factor(n_days),
+    Error_Rate = factor(Error_Rate)
+  )
+
+p1 <- ggplot(plot_data,
+             aes(x = Hamming_Distance, y = Mean_Count, color = Error_Rate)) +
+  geom_line(linewidth = 0.9) +
+  facet_grid(Model ~ Cycles_Per_Day + n_days, labeller = label_both) +
+  theme_bw() +
+  labs(
+    title = "Hamming distance distributions across parameter settings",
+    x = "Hamming distance from TF",
+    y = "Mean count across replicates",
+    color = "Error rate/cycle"
+  )
+
+ggsave("name.png", p1, width = 14, height = 7, dpi = 300)
+
+
+# Graph 2: Weighted mean Hamming distance
+mean_hd_data <- all_results %>%
+  group_by(Model, Replicate, Error_Rate, Cycles_Per_Day, n_days) %>%
+  summarise(
+    Weighted_Mean_Hamming = weighted.mean(Hamming_Distance, Count),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Cycles_Per_Day = factor(Cycles_Per_Day),
+    n_days = factor(n_days),
+    Error_Rate = factor(Error_Rate)
+  )
+
+p2 <- ggplot(mean_hd_data,
+             aes(x = Cycles_Per_Day,
+                 y = Weighted_Mean_Hamming,
+                 color = Error_Rate,
+                 group = interaction(Error_Rate, n_days))) +
+  geom_point(size = 2) +
+  geom_line(aes(linetype = n_days)) +
+  facet_wrap(~ Model) +
+  theme_bw() +
+  labs(
+    title = "Weighted mean Hamming distance",
+    x = "Replication cycles per day",
+    y = "Weighted mean Hamming distance",
+    color = "Error rate/cycle",
+    linetype = "n_days"
+  )
+
+ggsave("name.png", p2, width = 10, height = 5, dpi = 300)
+
+message("Done.")
+message("Results written to: hamming_distance_counts_parameter_sweep.csv")
+message("Plots written to: plot_hamming_distributions.png and plot_weighted_mean_hamming.png")
+# End
